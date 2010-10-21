@@ -91,6 +91,16 @@ module Geokit
             before_validation_on_create :auto_geocode_address
           end
         end
+
+        # include named_scope support
+        send :extend, Geokit::ActsAsMappable::GeokitForNamedScopes
+
+        # create default named scopes and add new find options
+        Geokit::ActsAsMappable::GeokitForNamedScopes::OPTIONS.each do |key|
+          metaclass::VALID_FIND_OPTIONS << key
+          named_scope key, lambda {|value| { key => value } }
+        end
+
       end
     end
 
@@ -126,6 +136,39 @@ module Geokit
       end
 
       reflection
+    end
+
+    # courtesy of Ben Johnson <bjohnson[at]binarylogic.com>
+    # http://www.binarylogic.com/2010/01/09/using-geokit-with-searchlogic/
+    # http://groups.google.com/group/geokit/browse_frm/thread/760c58292a37292a
+    module GeokitForNamedScopes
+
+      # default scopes
+      OPTIONS = [:origin, :within, :beyond, :range, :formula, :bounds]
+
+      def find(*args)
+        super(*transfer_from_scope_to_args(args))
+      end
+
+      def count(*args)
+        super(*transfer_from_scope_to_args(args))
+      end
+
+      private
+
+        def transfer_from_scope_to_args(args)
+          find_options = scope(:find)
+          if find_options.is_a?(Hash)
+            options = args.extract_options!
+            OPTIONS.each do |key|
+              options[key] = find_options.delete(key) if find_options.key?(key)
+            end
+            args << options
+          else
+            args
+          end
+        end
+
     end
 
     # Instance methods to mix into ActiveRecord.
