@@ -3,7 +3,7 @@ module Geokit
   # When mixed in, augments find services such that they provide distance calculation
   # query services.  The find method accepts additional options:
   #
-  # * :origin - can be 
+  # * :origin - can be
   #   1. a two-element array of latititude/longitude -- :origin=>[37.792,-122.393]
   #   2. a geocodeable string -- :origin=>'100 Spear st, San Francisco, CA'
   #   3. an object which responds to lat and lng methods, or latitude and longitude methods,
@@ -16,36 +16,36 @@ module Geokit
   # * find_closest (alias: find_nearest)
   # * find_farthest
   #
-  # Counter methods are available and work similarly to finders.  
+  # Counter methods are available and work similarly to finders.
   #
   # If raw SQL is desired, the distance_sql method can be used to obtain SQL appropriate
   # to use in a find_by_sql call.
   module ActsAsMappable
     class UnsupportedAdapter < StandardError ; end
-    
+
     # Mix below class methods into ActiveRecord.
     def self.included(base) # :nodoc:
       base.extend ClassMethods
     end
-    
+
     # Class method to mix into active record.
     module ClassMethods # :nodoc:
-      
+
       # Class method to bring distance query support into ActiveRecord models.  By default
       # uses :miles for distance units and performs calculations based upon the Haversine
       # (sphere) formula.  These can be changed by setting Geokit::default_units and
       # Geokit::default_formula.  Also, by default, uses lat, lng, and distance for respective
       # column names.  All of these can be overridden using the :default_units, :default_formula,
       # :lat_column_name, :lng_column_name, and :distance_column_name hash keys.
-      # 
+      #
       # Can also use to auto-geocode a specific column on create. Syntax;
-      #   
+      #
       #   acts_as_mappable :auto_geocode=>true
-      # 
+      #
       # By default, it tries to geocode the "address" field. Or, for more customized behavior:
-      #   
+      #
       #   acts_as_mappable :auto_geocode=>{:field=>:address,:error_message=>'bad address'}
-      #   
+      #
       # In both cases, it creates a before_validation_on_create callback to geocode the given column.
       # For anything more customized, we recommend you forgo the auto_geocode option
       # and create your own AR callback to handle geocoding.
@@ -82,7 +82,7 @@ module Geokit
 
           if options.include?(:auto_geocode) && options[:auto_geocode]
             # if the form auto_geocode=>true is used, let the defaults take over by suppling an empty hash
-            options[:auto_geocode] = {} if options[:auto_geocode] == true 
+            options[:auto_geocode] = {} if options[:auto_geocode] == true
             cattr_accessor :auto_geocode_field, :auto_geocode_error_message
             self.auto_geocode_field = options[:auto_geocode][:field] || 'address'
             self.auto_geocode_error_message = options[:auto_geocode][:error_message] || 'could not locate address'
@@ -91,6 +91,16 @@ module Geokit
             before_validation_on_create :auto_geocode_address
           end
         end
+
+        # include named_scope support
+        send :extend, Geokit::ActsAsMappable::GeokitForNamedScopes
+
+        # create default named scopes and add new find options
+        Geokit::ActsAsMappable::GeokitForNamedScopes::OPTIONS.each do |key|
+          metaclass::VALID_FIND_OPTIONS << key
+          named_scope key, lambda {|value| { key => value } }
+        end
+
       end
     end
 
@@ -103,7 +113,7 @@ module Geokit
         self.send("#{lat_column_name}=", geo.lat)
         self.send("#{lng_column_name}=", geo.lng)
       else
-        errors.add(auto_geocode_field, auto_geocode_error_message) 
+        errors.add(auto_geocode_field, auto_geocode_error_message)
       end
 
       geo.success
@@ -128,9 +138,42 @@ module Geokit
       reflection
     end
 
+    # courtesy of Ben Johnson <bjohnson[at]binarylogic.com>
+    # http://www.binarylogic.com/2010/01/09/using-geokit-with-searchlogic/
+    # http://groups.google.com/group/geokit/browse_frm/thread/760c58292a37292a
+    module GeokitForNamedScopes
+
+      # default scopes
+      OPTIONS = [:origin, :within, :beyond, :range, :formula, :bounds]
+
+      def find(*args)
+        super(*transfer_from_scope_to_args(args))
+      end
+
+      def count(*args)
+        super(*transfer_from_scope_to_args(args))
+      end
+
+      private
+
+        def transfer_from_scope_to_args(args)
+          find_options = scope(:find)
+          if find_options.is_a?(Hash)
+            options = args.extract_options!
+            OPTIONS.each do |key|
+              options[key] = find_options.delete(key) if find_options.key?(key)
+            end
+            args << options
+          else
+            args
+          end
+        end
+
+    end
+
     # Instance methods to mix into ActiveRecord.
     module SingletonMethods #:nodoc:
-      
+
       # A proxy to an instance of a finder adapter, inferred from the connection's adapter.
       def adapter
         @adapter ||= begin
@@ -142,7 +185,7 @@ module Geokit
           raise UnsupportedAdapter, "`#{connection.adapter_name.downcase}` is not a supported adapter."
         end
       end
-      
+
       # Extends the existing find method in potentially two ways:
       # - If a mappable instance exists in the options, adds a distance column.
       # - If a mappable instance exists in the options and the distance column exists in the
@@ -286,15 +329,15 @@ module Geokit
 
         # If we're here, it means that 1) an origin argument, 2) an :include, 3) an :order clause were supplied.
         # Now we have to sub some SQL into the :order clause. The reason is that when you do an :include,
-        # ActiveRecord drops the psuedo-column (specificically, distance) which we supplied for :select. 
+        # ActiveRecord drops the psuedo-column (specificically, distance) which we supplied for :select.
         # So, the 'distance' column isn't available for the :order clause to reference when we use :include.
         def handle_order_with_include(options, origin, units, formula)
           # replace the distance_column_name with the distance sql in order clause
           options[:order].sub!(distance_column_name, distance_sql(origin, units, formula))
         end
 
-        # Looks for mapping-specific tokens and makes appropriate translations so that the 
-        # original finder has its expected arguments.  Resets the the scope argument to 
+        # Looks for mapping-specific tokens and makes appropriate translations so that the
+        # original finder has its expected arguments.  Resets the the scope argument to
         # :first and ensures the limit is set to one.
         def apply_find_scope(args, options)
           case args.first
@@ -310,18 +353,18 @@ module Geokit
         end
 
         # If it's a :within query, add a bounding box to improve performance.
-        # This only gets called if a :bounds argument is not otherwise supplied. 
+        # This only gets called if a :bounds argument is not otherwise supplied.
         def formulate_bounds_from_distance(options, origin, units)
           distance = options[:within] if options.has_key?(:within)
           distance = options[:range].last-(options[:range].exclude_end?? 1 : 0) if options.has_key?(:range)
           if distance
             res=Geokit::Bounds.from_point_and_radius(origin,distance,:units=>units)
-          else 
+          else
             nil
           end
         end
 
-        # Replace :within, :beyond and :range distance tokens with the appropriate distance 
+        # Replace :within, :beyond and :range distance tokens with the appropriate distance
         # where clauses.  Removes these tokens from the options hash.
         def apply_distance_scope(options)
           distance_condition = if options.has_key?(:within) && !options[:within].blank?
@@ -349,17 +392,17 @@ module Geokit
         end
 
         # Extracts the origin instance out of the options if it exists and returns
-        # it.  If there is no origin, looks for latitude and longitude values to 
-        # create an origin.  The side-effect of the method is to remove these 
+        # it.  If there is no origin, looks for latitude and longitude values to
+        # create an origin.  The side-effect of the method is to remove these
         # option keys from the hash.
         def extract_origin_from_options(options)
           origin = options.delete(:origin)
           res = normalize_point_to_lat_lng(origin) if origin
           res
         end
-        
+
         # Extract the units out of the options if it exists and returns it.  If
-        # there is no :units key, it uses the default.  The side effect of the 
+        # there is no :units key, it uses the default.  The side effect of the
         # method is to remove the :units key from the options hash.
         def extract_units_from_options(options)
           units = options[:units] || default_units
@@ -368,7 +411,7 @@ module Geokit
         end
 
         # Extract the formula out of the options if it exists and returns it.  If
-        # there is no :formula key, it uses the default.  The side effect of the 
+        # there is no :formula key, it uses the default.  The side effect of the
         # method is to remove the :formula key from the options hash.
         def extract_formula_from_options(options)
           formula = options[:formula] || default_formula
@@ -403,11 +446,11 @@ module Geokit
           if origin
             distance_selector = distance_sql(origin, units, formula) + " AS #{distance_column_name}"
             selector = options.has_key?(:select) && options[:select] ? options[:select] : "*"
-            options[:select] = "#{selector}, #{distance_selector}"  
+            options[:select] = "#{selector}, #{distance_selector}"
           end
         end
 
-        # Looks for the distance column and replaces it with the distance sql. If an origin was not 
+        # Looks for the distance column and replaces it with the distance sql. If an origin was not
         # passed in and the distance column exists, we leave it to be flagged as bad SQL by the database.
         # Conditions are either a string or an array.  In the case of an array, the first entry contains
         # the condition.
